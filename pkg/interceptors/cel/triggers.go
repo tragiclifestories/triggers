@@ -29,8 +29,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter/functions"
-	"github.com/tektoncd/triggers/pkg/interceptors"
-	"k8s.io/client-go/kubernetes"
+	"github.com/tektoncd/triggers/pkg/interceptors/secrets"
 	"sigs.k8s.io/yaml"
 
 	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1alpha1"
@@ -150,14 +149,13 @@ import (
 // 		body.field.parseYAML().item
 
 // Triggers creates and returns a new cel.Lib with the triggers extensions.
-func Triggers(request *http.Request, ns string, k kubernetes.Interface) cel.EnvOption {
-	return cel.Lib(triggersLib{request: request, defaultNS: ns, client: k})
+func Triggers(ns string, ws secrets.SecretStore) cel.EnvOption {
+	return cel.Lib(triggersLib{defaultNS: ns, secretStore: ws})
 }
 
 type triggersLib struct {
-	request   *http.Request
-	defaultNS string
-	client    kubernetes.Interface
+	defaultNS   string
+	secretStore secrets.SecretStore
 }
 
 func (triggersLib) CompileOptions() []cel.EnvOption {
@@ -219,7 +217,7 @@ func (t triggersLib) ProgramOptions() []cel.ProgramOption {
 				Unary:    parseURLString},
 			&functions.Overload{
 				Operator: "compareSecret",
-				Function: makeCompareSecret(t.request, t.defaultNS, t.client)},
+				Function: makeCompareSecret(t.defaultNS, t.secretStore)},
 		)}
 }
 
@@ -284,7 +282,7 @@ func decodeB64String(val ref.Val) ref.Val {
 
 // makeCompareSecret creates and returns a functions.FunctionOp that wraps the
 // ns and client in a closure with a function that can compare the string.
-func makeCompareSecret(request *http.Request, defaultNS string, k kubernetes.Interface) functions.FunctionOp {
+func makeCompareSecret(defaultNS string, ws secrets.SecretStore) functions.FunctionOp {
 	return func(vals ...ref.Val) ref.Val {
 		var ok bool
 		compareString, ok := vals[0].(types.String)
@@ -318,7 +316,7 @@ func makeCompareSecret(request *http.Request, defaultNS string, k kubernetes.Int
 			SecretName: string(secretName),
 			Namespace:  string(secretNS),
 		}
-		secretToken, err := interceptors.GetSecretToken(request, k, secretRef, string(secretNS))
+		secretToken, err := ws.Get(*secretRef)
 		if err != nil {
 			return types.NewErr("failed to find secret '%#v' in compareSecret: %w", *secretRef, err)
 		}

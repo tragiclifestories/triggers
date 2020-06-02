@@ -20,11 +20,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"go.uber.org/zap"
 
 	dynamicClientset "github.com/tektoncd/triggers/pkg/client/dynamic/clientset"
 	"github.com/tektoncd/triggers/pkg/client/dynamic/clientset/tekton"
+	"github.com/tektoncd/triggers/pkg/interceptors/secrets"
 	"github.com/tektoncd/triggers/pkg/logging"
 	"github.com/tektoncd/triggers/pkg/sink"
 	"k8s.io/client-go/dynamic"
@@ -80,12 +82,15 @@ func main() {
 		logger.Fatal(err)
 	}
 
+	secretStore := secrets.NewSecretStore(kubeClient, sinkArgs.ElNamespace, 5*time.Second, stopCh)
+
 	// Create EventListener Sink
 	r := sink.Sink{
 		KubeClientSet:          kubeClient,
 		DiscoveryClient:        sinkClients.DiscoveryClient,
 		DynamicClient:          dynamicCS,
 		TriggersClient:         sinkClients.TriggersClient,
+		SecretStore:            secretStore,
 		HTTPClient:             http.DefaultClient,
 		EventListenerName:      sinkArgs.ElName,
 		EventListenerNamespace: sinkArgs.ElNamespace,

@@ -19,6 +19,7 @@ package cel
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -32,10 +33,6 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/go-cmp/cmp"
 	"github.com/tektoncd/pipeline/pkg/logging"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	fakekubeclient "knative.dev/pkg/client/injection/kube/client/fake"
-	rtesting "knative.dev/pkg/reconciler/testing"
 
 	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1alpha1"
 )
@@ -185,14 +182,6 @@ func TestInterceptor_ExecuteTrigger(t *testing.T) {
 		{
 			name: "validating a secret",
 			CEL: &triggersv1.CELInterceptor{
-				Filter: "header.canonical('X-Secret-Token').compareSecret('token', 'test-secret', 'testing-ns')",
-			},
-			payload: ioutil.NopCloser(bytes.NewBufferString(`{"count":1,"measure":1.7}`)),
-			want:    []byte(`{"count":1,"measure":1.7}`),
-		},
-		{
-			name: "validating a secret with a namespace and name",
-			CEL: &triggersv1.CELInterceptor{
 				Filter: "header.canonical('X-Secret-Token').compareSecret('token', 'test-secret', 'testing-ns') && body.count == 1.0",
 			},
 			payload: ioutil.NopCloser(bytes.NewBufferString(`{"count":1,"measure":1.7}`)),
@@ -229,15 +218,12 @@ func TestInterceptor_ExecuteTrigger(t *testing.T) {
 			want:    []byte(`{"test":{"one":"yo","two":false,"three":{"other": "thing"},"other":"thing"},"value":"test"}`),
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(rt *testing.T) {
 			logger, _ := logging.NewLogger("", "")
-			ctx, _ := rtesting.SetupFakeContext(t)
-			kubeClient := fakekubeclient.Get(ctx)
-			if _, err := kubeClient.CoreV1().Secrets(testNS).Create(makeSecret()); err != nil {
-				rt.Error(err)
-			}
-			w := NewInterceptor(tt.CEL, kubeClient, "testing-ns", logger)
+			secretStore := fakeSecretStore{text: "secrettoken"}
+			w := NewInterceptor(tt.CEL, secretStore, testNS, logger)
 			request := &http.Request{
 				URL:  mustParseURL(t, "https://testing.example.com"),
 				Body: tt.payload,
@@ -377,7 +363,7 @@ func TestExpressionEvaluation(t *testing.T) {
 	tests := []struct {
 		name   string
 		expr   string
-		secret *corev1.Secret
+		secret string
 		want   ref.Val
 	}{
 		{
@@ -444,19 +430,19 @@ func TestExpressionEvaluation(t *testing.T) {
 			name:   "compare string against secret",
 			expr:   "'secrettoken'.compareSecret('token', 'test-secret', 'testing-ns') ",
 			want:   types.Bool(true),
-			secret: makeSecret(),
+			secret: "secrettoken",
 		},
 		{
 			name:   "compare string against secret with no match",
 			expr:   "'nomatch'.compareSecret('token', 'test-secret', 'testing-ns') ",
 			want:   types.Bool(false),
-			secret: makeSecret(),
+			secret: "secrettoken",
 		},
 		{
 			name:   "compare string against secret in the default namespace",
 			expr:   "'secrettoken'.compareSecret('token', 'test-secret') ",
 			want:   types.Bool(true),
-			secret: makeSecret(),
+			secret: "secrettoken",
 		},
 		{
 			name: "parse JSON body in a string",
@@ -491,14 +477,8 @@ func TestExpressionEvaluation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(rt *testing.T) {
-			ctx, _ := rtesting.SetupFakeContext(rt)
-			kubeClient := fakekubeclient.Get(ctx)
-			if tt.secret != nil {
-				if _, err := kubeClient.CoreV1().Secrets(tt.secret.ObjectMeta.Namespace).Create(tt.secret); err != nil {
-					rt.Error(err)
-				}
-			}
-			env, err := makeCelEnv(req, testNS, kubeClient)
+			secretStore := fakeSecretStore{text: tt.secret}
+			env, err := makeCelEnv(testNS, secretStore)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -533,10 +513,10 @@ func TestExpressionEvaluation_Error(t *testing.T) {
 	header := http.Header{}
 	evalEnv := map[string]interface{}{"body": jsonMap, "header": header}
 	tests := []struct {
-		name     string
-		expr     string
-		secretNS string
-		want     string
+		name   string
+		expr   string
+		secret string
+		want   string
 	}{
 		{
 			name: "unknown value",
@@ -574,12 +554,6 @@ func TestExpressionEvaluation_Error(t *testing.T) {
 			want: "failed to find secret.*testing.*",
 		},
 		{
-			name:     "secret not in default ns",
-			expr:     "'testing'.compareSecret('testSecret', 'mytoken')",
-			secretNS: "another-ns",
-			want:     "failed to find secret.*another-ns.*",
-		},
-		{
 			name: "invalid parseJSON body",
 			expr: "body.value.parseJSON().test == 'test'",
 			want: "invalid character 'e' in literal",
@@ -612,17 +586,9 @@ func TestExpressionEvaluation_Error(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(rt *testing.T) {
-			ctx, _ := rtesting.SetupFakeContext(t)
-			kubeClient := fakekubeclient.Get(ctx)
 			ns := testNS
-			if tt.secretNS != "" {
-				secret := makeSecret()
-				if _, err := kubeClient.CoreV1().Secrets(secret.ObjectMeta.Namespace).Create(secret); err != nil {
-					rt.Error(err)
-				}
-				ns = tt.secretNS
-			}
-			env, err := makeCelEnv(&http.Request{}, ns, kubeClient)
+			secretStore := fakeSecretStore{text: tt.secret}
+			env, err := makeCelEnv(ns, secretStore)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -679,16 +645,16 @@ func matchError(t *testing.T, s string, e error) bool {
 	return match
 }
 
-func makeSecret() *corev1.Secret {
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNS,
-			Name:      "test-secret",
-		},
-		Data: map[string][]byte{
-			"token": []byte("secrettoken"),
-		},
+type fakeSecretStore struct {
+	text string
+}
+
+func (s fakeSecretStore) Get(sr triggersv1.SecretRef) ([]byte, error) {
+	if s.text == "" {
+		return []byte(""), errors.New("Not found")
 	}
+
+	return []byte(s.text), nil
 }
 
 func mustParseURL(t *testing.T, u string) *url.URL {

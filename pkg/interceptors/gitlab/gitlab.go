@@ -23,26 +23,24 @@ import (
 	"net/http"
 
 	"github.com/tektoncd/triggers/pkg/interceptors"
+	"github.com/tektoncd/triggers/pkg/interceptors/secrets"
 
 	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1alpha1"
 
 	"go.uber.org/zap"
-	"k8s.io/client-go/kubernetes"
 )
 
 type Interceptor struct {
-	KubeClientSet          kubernetes.Interface
-	Logger                 *zap.SugaredLogger
-	GitLab                 *triggersv1.GitLabInterceptor
-	EventListenerNamespace string
+	secretStore secrets.SecretStore
+	Logger      *zap.SugaredLogger
+	GitLab      *triggersv1.GitLabInterceptor
 }
 
-func NewInterceptor(gl *triggersv1.GitLabInterceptor, k kubernetes.Interface, ns string, l *zap.SugaredLogger) interceptors.Interceptor {
+func NewInterceptor(gl *triggersv1.GitLabInterceptor, w secrets.SecretStore, l *zap.SugaredLogger) interceptors.Interceptor {
 	return &Interceptor{
-		Logger:                 l,
-		GitLab:                 gl,
-		KubeClientSet:          k,
-		EventListenerNamespace: ns,
+		Logger:      l,
+		GitLab:      gl,
+		secretStore: w,
 	}
 }
 
@@ -54,7 +52,7 @@ func (w *Interceptor) ExecuteTrigger(request *http.Request) (*http.Response, err
 			return nil, errors.New("no X-GitLab-Token header set")
 		}
 
-		secretToken, err := interceptors.GetSecretToken(request, w.KubeClientSet, w.GitLab.SecretRef, w.EventListenerNamespace)
+		secretToken, err := w.secretStore.Get(*w.GitLab.SecretRef)
 		if err != nil {
 			return nil, err
 		}

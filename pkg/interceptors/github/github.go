@@ -26,23 +26,21 @@ import (
 	gh "github.com/google/go-github/v31/github"
 	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1alpha1"
 	"github.com/tektoncd/triggers/pkg/interceptors"
+	"github.com/tektoncd/triggers/pkg/interceptors/secrets"
 	"go.uber.org/zap"
-	"k8s.io/client-go/kubernetes"
 )
 
 type Interceptor struct {
-	KubeClientSet          kubernetes.Interface
-	Logger                 *zap.SugaredLogger
-	GitHub                 *triggersv1.GitHubInterceptor
-	EventListenerNamespace string
+	secretStore secrets.SecretStore
+	Logger      *zap.SugaredLogger
+	GitHub      *triggersv1.GitHubInterceptor
 }
 
-func NewInterceptor(gh *triggersv1.GitHubInterceptor, k kubernetes.Interface, ns string, l *zap.SugaredLogger) interceptors.Interceptor {
+func NewInterceptor(gh *triggersv1.GitHubInterceptor, w secrets.SecretStore, l *zap.SugaredLogger) interceptors.Interceptor {
 	return &Interceptor{
-		Logger:                 l,
-		GitHub:                 gh,
-		KubeClientSet:          k,
-		EventListenerNamespace: ns,
+		Logger:      l,
+		GitHub:      gh,
+		secretStore: w,
 	}
 }
 
@@ -64,7 +62,7 @@ func (w *Interceptor) ExecuteTrigger(request *http.Request) (*http.Response, err
 		if header == "" {
 			return nil, errors.New("no X-Hub-Signature header set")
 		}
-		secretToken, err := interceptors.GetSecretToken(request, w.KubeClientSet, w.GitHub.SecretRef, w.EventListenerNamespace)
+		secretToken, err := w.secretStore.Get(*w.GitHub.SecretRef)
 		if err != nil {
 			return nil, err
 		}
